@@ -14,6 +14,8 @@ create table if not exists public.profiles (
   created_at  timestamptz not null default now()
 );
 
+alter table public.profiles add column if not exists recovery_hash text;
+
 create table if not exists public.invite_codes (
   code      text primary key,
   role      text not null default 'resident' check (role in ('resident','moderator')),
@@ -59,6 +61,10 @@ create table if not exists public.complaints (
   updated_at      timestamptz not null default now()
 );
 alter table public.complaints add column if not exists bad_photo_path text;
+-- Ответ акимата: скриншот ответа, обещанный срок, короткая выдержка
+alter table public.complaints add column if not exists answer_photo_path text;
+alter table public.complaints add column if not exists answer_deadline date;
+alter table public.complaints add column if not exists answer_note text check (char_length(answer_note) <= 300);
 
 create index if not exists complaints_city_idx on public.complaints (city, status);
 create index if not exists complaints_geo_idx  on public.complaints (lat, lng);
@@ -75,6 +81,18 @@ create table if not exists public.votes (
   primary key (complaint_id, user_id, kind, round)
 );
 alter table public.votes add column if not exists photo_path text;
+
+-- История жалобы: ответы акимата, скрины, фото и комментарии автора / модератора. Видна всем.
+create table if not exists public.complaint_updates (
+  id           bigint generated always as identity primary key,
+  complaint_id bigint not null references public.complaints(id) on delete cascade,
+  author       uuid   not null references public.profiles(id) on delete cascade,
+  kind         text   not null check (kind in ('note','answer','reported','ticket')),
+  note         text   check (char_length(note) <= 500),
+  photo_path   text,
+  created_at   timestamptz not null default now()
+);
+create index if not exists complaint_updates_c_idx on public.complaint_updates (complaint_id, created_at);
 
 -- ============ Справочник категорий (как в прототипе) ============
 
@@ -233,7 +251,8 @@ begin
         status = 'to_send', reopen_count = reopen_count + 1, round = round + 1,
         fixed_count = 0, notfixed_count = 0, bad_count = 0,
         verifying_since = null, fixed_at = null, akimat_reported = false,
-        ticket_no = null, ticket_channel = null, sent_at = null, answered_at = null
+        ticket_no = null, ticket_channel = null, sent_at = null, answered_at = null,
+        answer_photo_path = null, answer_deadline = null, answer_note = null
       where id = p_id returning status into c.status;
     end if;
   end if;
@@ -256,6 +275,117 @@ begin
     status = case when status in ('collecting','to_send') then 'sent' else status end,
     sent_at = coalesce(sent_at, now()), updated_at = now()
   where id = p_id;
+  insert into complaint_updates (complaint_id, author, kind, note)
+    values (p_id, auth.uid(), 'ticket', coalesce(p_channel,'') || ' № ' || left(trim(p_no),60));
+end $$;
+
+-- ============ «Акимат ответил» (автор жалобы или модератор) ============
+-- Автоматически узнать об ответе нельзя: у eOtinish / iKomek нет открытого API.
+-- Поэтому автор или модератор отмечает ответ сам и прикладывает скриншот ответа.
+-- С этого момента счётчик «дней без ответа» останавливается.
+
+create or replace function public.mark_answered(p_id bigint, p_photo_path text, p_deadline date default null, p_note text default null) returns void
+language plpgsql security definer set search_path = public as $$
+declare c complaints;
+begin
+  if not is_member() then raise exception 'not_member'; end if;
+  select * into c from complaints where id = p_id for update;
+  if not found then raise exception 'not_found'; end if;
+  if c.author <> auth.uid() and not is_mod() then raise exception 'forbidden'; end if;
+  if c.status <> 'sent' then raise exception 'wrong_status'; end if;
+  if p_photo_path is null or (p_photo_path not like auth.uid()::text || '/%' and not is_mod()) then
+    raise exception 'answer_photo_required';
+  end if;
+  if p_deadline is not null and (p_deadline < current_date - 1 or p_deadline > current_date + 730) then
+    raise exception 'bad_deadline';
+  end if;
+  update complaints set status = 'in_work', answered_at = now(),
+    answer_photo_path = p_photo_path, answer_deadline = p_deadline,
+    answer_note = left(nullif(trim(p_note), ''), 300), updated_at = now()
+  where id = p_id;
+  insert into complaint_updates (complaint_id, author, kind, note, photo_path)
+    values (p_id, auth.uid(), 'answer', left(nullif(trim(p_note), ''), 300), p_photo_path);
+end $$;
+
+-- ============ «Акимат сообщил, что исправлено» (автор или модератор, со скриншотом) ============
+-- Точка уходит на проверку жителями; зелёной её делают только 3 голоса «исправлено» с места.
+
+create or replace function public.mark_reported(p_id bigint, p_photo_path text, p_note text default null) returns void
+language plpgsql security definer set search_path = public as $$
+declare c complaints;
+begin
+  if not is_member() then raise exception 'not_member'; end if;
+  select * into c from complaints where id = p_id for update;
+  if not found then raise exception 'not_found'; end if;
+  if c.author <> auth.uid() and not is_mod() then raise exception 'forbidden'; end if;
+  if c.status not in ('sent','in_work') then raise exception 'wrong_status'; end if;
+  if p_photo_path is null or (p_photo_path not like auth.uid()::text || '/%' and not is_mod()) then
+    raise exception 'answer_photo_required';
+  end if;
+  update complaints set status = 'verifying', akimat_reported = true,
+    answered_at = coalesce(answered_at, now()), verifying_since = coalesce(verifying_since, now()), updated_at = now()
+  where id = p_id;
+  insert into complaint_updates (complaint_id, author, kind, note, photo_path)
+    values (p_id, auth.uid(), 'reported', left(nullif(trim(p_note), ''), 500), p_photo_path);
+end $$;
+
+-- ============ Фото / скрин / комментарий в историю жалобы ============
+
+create or replace function public.add_update(p_id bigint, p_note text, p_photo_path text default null) returns void
+language plpgsql security definer set search_path = public as $$
+declare c complaints;
+begin
+  if not is_member() then raise exception 'not_member'; end if;
+  select * into c from complaints where id = p_id;
+  if not found then raise exception 'not_found'; end if;
+  if c.author <> auth.uid() and not is_mod() then raise exception 'forbidden'; end if;
+  if coalesce(trim(p_note), '') = '' and p_photo_path is null then raise exception 'empty_update'; end if;
+  if p_photo_path is not null and p_photo_path not like auth.uid()::text || '/%' then raise exception 'bad_photo'; end if;
+  if (select count(*) from complaint_updates where author = auth.uid() and created_at > now() - interval '1 day') >= 30 then
+    raise exception 'rate_limit';
+  end if;
+  insert into complaint_updates (complaint_id, author, kind, note, photo_path)
+    values (p_id, auth.uid(), 'note', left(nullif(trim(p_note), ''), 500), p_photo_path);
+  update complaints set updated_at = now() where id = p_id;
+end $$;
+
+-- ============ Код восстановления кабинета ============
+-- Аккаунт анонимный и живёт в браузере. Чтобы перенести кабинет на новый телефон,
+-- житель сохраняет код восстановления. Храним только его хэш.
+
+create or replace function public.new_recovery_code() returns text
+language plpgsql security definer set search_path = public as $$
+declare v_code text;
+begin
+  if not is_member() then raise exception 'not_member'; end if;
+  v_code := upper(substr(md5(gen_random_uuid()::text || clock_timestamp()::text), 1, 4) || '-' ||
+                  substr(md5(gen_random_uuid()::text), 1, 4) || '-' ||
+                  substr(md5(gen_random_uuid()::text), 1, 4));
+  update profiles set recovery_hash = encode(sha256(convert_to(v_code, 'UTF8')), 'hex') where id = auth.uid();
+  return v_code;
+end $$;
+
+create or replace function public.recover_account(p_code text) returns text
+language plpgsql security definer set search_path = public as $$
+declare v_old profiles; v_new uuid := auth.uid(); v_hash text;
+begin
+  if v_new is null then raise exception 'not_signed_in'; end if;
+  v_hash := encode(sha256(convert_to(upper(trim(p_code)), 'UTF8')), 'hex');
+  select * into v_old from profiles where recovery_hash = v_hash for update;
+  if not found then raise exception 'bad_recovery'; end if;
+  if v_old.id = v_new then return v_old.role; end if;
+  if v_old.banned then raise exception 'banned'; end if;
+  -- Текущий профиль на этом устройстве (если есть) должен быть пустым
+  if exists (select 1 from complaints where author = v_new) or exists (select 1 from votes where user_id = v_new) then
+    raise exception 'device_not_empty';
+  end if;
+  delete from profiles where id = v_new;
+  insert into profiles (id, role, consent_at, invite_code) values (v_new, v_old.role, now(), v_old.invite_code);
+  update complaints set author = v_new where author = v_old.id;
+  update votes set user_id = v_new where user_id = v_old.id;
+  update complaint_updates set author = v_new where author = v_old.id;
+  delete from profiles where id = v_old.id;
+  return v_old.role;
 end $$;
 
 -- ============ Действия модератора ============
@@ -264,12 +394,7 @@ create or replace function public.mod_action(p_id bigint, p_action text, p_value
 language plpgsql security definer set search_path = public as $$
 begin
   if not is_mod() then raise exception 'forbidden'; end if;
-  if p_action = 'answered' then          -- акимат ответил, в работе
-    update complaints set status = 'in_work', answered_at = coalesce(answered_at, now()) where id = p_id and status in ('sent','to_send');
-  elsif p_action = 'akimat_reported' then -- акимат отчитался о ремонте → проверка жителями
-    update complaints set status = 'verifying', akimat_reported = true, verifying_since = coalesce(verifying_since, now())
-      where id = p_id and status in ('sent','in_work');
-  elsif p_action = 'hide' then
+  if p_action = 'hide' then
     update complaints set hidden = true, hidden_reason = p_value where id = p_id;
   elsif p_action = 'unhide' then
     update complaints set hidden = false, hidden_reason = null where id = p_id;
@@ -311,6 +436,11 @@ alter table public.profiles     enable row level security;
 alter table public.invite_codes enable row level security;  -- без политик: коды не видны клиенту
 alter table public.complaints   enable row level security;
 alter table public.votes        enable row level security;
+alter table public.complaint_updates enable row level security;
+
+drop policy if exists updates_read on public.complaint_updates;
+create policy updates_read on public.complaint_updates for select
+  using (exists (select 1 from public.complaints c where c.id = complaint_id));
 
 drop policy if exists profiles_self on public.profiles;
 create policy profiles_self on public.profiles for select using (id = auth.uid() or public.is_mod());
@@ -323,11 +453,16 @@ drop policy if exists votes_read on public.votes;
 create policy votes_read on public.votes for select using (user_id = auth.uid() or public.is_mod());
 
 -- Писать в таблицы напрямую нельзя никому: только через функции выше.
-revoke insert, update, delete on public.profiles, public.complaints, public.votes, public.invite_codes from anon, authenticated;
+revoke insert, update, delete on public.profiles, public.complaints, public.votes, public.invite_codes, public.complaint_updates from anon, authenticated;
+grant select on public.complaint_updates to anon, authenticated;
 revoke all on public.invite_codes from anon, authenticated;
 grant select on public.complaints to anon, authenticated;
 grant select on public.profiles, public.votes to authenticated;
 
+revoke execute on function public.mark_answered(bigint,text,date,text), public.mark_reported(bigint,text,text),
+  public.add_update(bigint,text,text), public.new_recovery_code(), public.recover_account(text) from public, anon;
+grant execute on function public.mark_answered(bigint,text,date,text), public.mark_reported(bigint,text,text),
+  public.add_update(bigint,text,text), public.new_recovery_code(), public.recover_account(text) to authenticated;
 revoke execute on function public.join_pilot(text), public.create_complaint(text,text,text,int,text,text,float8,float8,text),
   public.confirm_complaint(bigint), public.vote_repair(bigint,text,float8,float8,text), public.set_ticket(bigint,text,text),
   public.mod_action(bigint,text,text), public.delete_my_data() from public, anon;
