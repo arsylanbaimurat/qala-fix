@@ -44,6 +44,7 @@ const ERRORS = {
   custom_type_required: "Напишите, что за проблема.",
   empty_ticket: "Введите номер обращения.",
   photo_required: "Для «сделано плохо» нужно свежее фото с места.",
+  reason_required: "Укажите причину удаления.",
   answer_photo_required: "Приложите скриншот или фото ответа акимата.",
   bad_deadline: "Проверьте обещанный срок.",
   bad_recovery: "Код восстановления не подошёл.",
@@ -744,11 +745,13 @@ function bindMod(c){
     if (a === "contractor") v = $("#mContr").value;
     if (a === "warranty"){ v = $("#mWarr").value; if (!v) return toast("Выберите дату."); }
     if (a === "delete"){
-      if (!confirm("Удалить жалобу навсегда вместе с фото, голосами и историей? Это нельзя отменить.")) return;
+      const reason = prompt("Удалить жалобу навсегда вместе с фото, голосами и историей? Это нельзя отменить.\nПричина (запишется в журнал удалений):", "тест");
+      if (reason === null) return;
+      if (!reason.trim()) return toast("Укажите причину удаления.");
       return busy(e.currentTarget, async () => {
         const { data: ups } = await S.sb.from("complaint_updates").select("photo_path").eq("complaint_id", c.id);
         const paths = [c.photo_path, c.bad_photo_path, c.answer_photo_path, ...(ups || []).map(u => u.photo_path)].filter(Boolean);
-        await rpc("mod_action", {p_id:c.id, p_action:"delete", p_value:null});
+        await rpc("mod_action", {p_id:c.id, p_action:"delete", p_value:reason.trim()});
         if (paths.length) await S.sb.storage.from("photos").remove([...new Set(paths)]);
         toast("Жалоба удалена."); closeSheet(); await refresh();
       });
@@ -769,8 +772,12 @@ async function openModeration(){
     ${sect("Ждут ответа акимата", all.filter(c => c.status === "sent" && !c.hidden).sort((a,b) => daysUnanswered(b) - daysUnanswered(a)), "Когда придёт ответ, отметьте «Акимат ответил».")}
     ${sect("В работе", all.filter(c => c.status === "in_work" && !c.hidden))}
     ${sect("Скрытые", all.filter(c => c.hidden))}
+    <h3>Журнал удалений</h3><div id="delLog" class="muted small">Загрузка…</div>
     <h3>Всего: ${all.length}</h3>`);
   document.querySelectorAll("[data-open]").forEach(el => el.onclick = () => openComplaint(Number(el.dataset.open)));
+  const { data: log } = await S.sb.from("deletion_log").select("*").order("created_at", {ascending:false}).limit(100);
+  if ($("#delLog")) $("#delLog").innerHTML = (log || []).map(l => `<div class="list-item"><div class="grow"><div class="title">№${l.complaint_id} · ${esc(l.snapshot?.cat === "other" ? l.snapshot?.custom_type : (CATS[l.snapshot?.cat]?.name || l.snapshot?.cat || ""))}</div>
+    <div class="small">${fmtDate(l.created_at)} · ${esc(l.snapshot?.address || "")} · причина: ${esc(l.reason || "")}</div></div></div>`).join("") || "Пусто.";
 }
 
 // ---------- Меню ----------

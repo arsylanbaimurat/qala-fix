@@ -72,12 +72,15 @@ select mark_answered(:id2, '00000000-0000-0000-0000-000000000009/ans.jpg', curre
 select status, answered_at is not null as answered, answer_deadline - current_date as deadline_in, answer_note from complaints where id=:id2;
 select id, status, hidden, effective_sev(c) from complaints c order by id;
 select create_complaint('astana','trash',null,null,'мусор',null,51.17,71.47,null) as idd \gset
-select mod_action(:idd,'delete');
+do $$ begin perform mod_action((select max(id) from complaints),'delete',null); raise exception 'FAIL no reason'; exception when others then if sqlerrm not like '%reason_required%' then raise; end if; end $$;
+select mod_action(:idd,'delete','тестовая жалоба');
+select reason, snapshot->>'cat' as cat from deletion_log;
 select count(*) as deleted_gone from complaints where id = :idd;
 -- resident cannot see hidden or others' votes / invite codes
 select pg_temp.as_user(2);
 select count(*) as visible_to_2 from complaints;
 select count(*) as votes_visible_to_2 from votes;
+select count(*) as log_visible_to_resident from deletion_log;
 do $$ begin perform 1 from invite_codes; raise exception 'FAIL codes visible'; exception when insufficient_privilege then null; end $$;
 -- anon can read map
 -- history: author adds note/photo; others cannot; reported moves to verifying

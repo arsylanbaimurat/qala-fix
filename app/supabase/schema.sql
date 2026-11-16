@@ -92,6 +92,16 @@ create table if not exists public.complaint_updates (
   photo_path   text,
   created_at   timestamptz not null default now()
 );
+-- Журнал удалений: кто, когда, почему и что было удалено (копия жалобы). Видит только модератор.
+create table if not exists public.deletion_log (
+  id           bigint generated always as identity primary key,
+  complaint_id bigint not null,
+  actor        uuid,
+  reason       text,
+  snapshot     jsonb not null,
+  created_at   timestamptz not null default now()
+);
+
 create index if not exists complaint_updates_c_idx on public.complaint_updates (complaint_id, created_at);
 
 -- ============ Справочник категорий (как в прототипе) ============
@@ -407,7 +417,10 @@ begin
     update complaints set contractor = p_value where id = p_id;
   elsif p_action = 'warranty' then
     update complaints set warranty_until = p_value::date where id = p_id;
-  elsif p_action = 'delete' then        -- удалить навсегда (с голосами и историей)
+  elsif p_action = 'delete' then        -- удалить навсегда (с голосами и историей), с записью в журнал
+    if coalesce(trim(p_value), '') = '' then raise exception 'reason_required'; end if;
+    insert into deletion_log (complaint_id, actor, reason, snapshot)
+      select id, auth.uid(), left(trim(p_value), 300), to_jsonb(c) from complaints c where id = p_id;
     delete from complaints where id = p_id;
     return;
   elsif p_action = 'remove_photo' then
@@ -440,6 +453,10 @@ alter table public.invite_codes enable row level security;  -- без полит
 alter table public.complaints   enable row level security;
 alter table public.votes        enable row level security;
 alter table public.complaint_updates enable row level security;
+alter table public.deletion_log enable row level security;
+
+drop policy if exists deletion_log_mod on public.deletion_log;
+create policy deletion_log_mod on public.deletion_log for select using (public.is_mod());
 
 drop policy if exists updates_read on public.complaint_updates;
 create policy updates_read on public.complaint_updates for select
@@ -458,6 +475,8 @@ create policy votes_read on public.votes for select using (user_id = auth.uid() 
 -- Писать в таблицы напрямую нельзя никому: только через функции выше.
 revoke insert, update, delete on public.profiles, public.complaints, public.votes, public.invite_codes, public.complaint_updates from anon, authenticated;
 grant select on public.complaint_updates to anon, authenticated;
+revoke all on public.deletion_log from anon, authenticated;
+grant select on public.deletion_log to authenticated;
 revoke all on public.invite_codes from anon, authenticated;
 grant select on public.complaints to anon, authenticated;
 grant select on public.profiles, public.votes to authenticated;
