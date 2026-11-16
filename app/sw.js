@@ -1,6 +1,6 @@
 // Service worker: кэширует оболочку приложения, чтобы оно открывалось быстро и ставилось на экран.
 // Данные (жалобы, фото) всегда берутся из сети.
-const VERSION = "qala-v1";
+const VERSION = "qala-v3";
 const SHELL = ["./", "index.html", "style.css", "app.js", "config.js", "manifest.webmanifest",
   "vendor/leaflet.js", "vendor/leaflet.css", "vendor/supabase.js", "icons/icon-192.png"];
 

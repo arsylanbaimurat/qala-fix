@@ -44,6 +44,12 @@ const ERRORS = {
   custom_type_required: "Напишите, что за проблема.",
   empty_ticket: "Введите номер обращения.",
   photo_required: "Для «сделано плохо» нужно свежее фото с места.",
+  answer_photo_required: "Приложите скриншот или фото ответа акимата.",
+  bad_deadline: "Проверьте обещанный срок.",
+  bad_recovery: "Код восстановления не подошёл.",
+  device_not_empty: "На этом телефоне уже есть свои жалобы, перенести кабинет сюда нельзя.",
+  empty_update: "Добавьте фото или текст.",
+  banned: "Аккаунт заблокирован модератором.",
 };
 
 // ---------- Состояние ----------
@@ -195,6 +201,7 @@ function bindUI(){
   };
   $("#addBtn").onclick = startReport;
   $("#menuBtn").onclick = openMenu;
+  $("#meBtn").onclick = openCabinet;
   $("#locateBtn").onclick = async () => {
     try { const p = await getPosition(); S.map.setView([p.lat, p.lng], 17); }
     catch(e){ toast(e.message); }
@@ -237,11 +244,17 @@ function openJoin(then){
   openSheet(`<h2>Вход в пилот Qala.fix</h2>
     <p class="muted">Сейчас приложение тестируют приглашённые жители. Введите код из приглашения.</p>
     <div class="stack">
-      <label class="field"><span>Инвайт-код</span><input id="code" autocomplete="off" autocapitalize="characters" placeholder="QALA-XXXXXX"></label>
+      <label class="field"><span id="codeLabel">Инвайт-код</span><input id="code" autocomplete="off" autocapitalize="characters" placeholder="Код из приглашения"></label>
+      <div class="small"><a href="#" id="recToggle">Уже пользовались Qala.fix на другом телефоне? Введите код восстановления кабинета</a></div>
       <label class="check"><input type="checkbox" id="consent">
         <span>Я согласен(на) на обработку данных по <a href="privacy.html" target="_blank">условиям пилота</a>: фото, координаты проблемы и описание будут опубликованы на карте. Имя и телефон не собираются.</span></label>
       <button class="btn" id="joinBtn">Войти</button>
     </div>`);
+  let recovery = false;
+  $("#recToggle").onclick = ev => { ev.preventDefault(); recovery = !recovery;
+    $("#codeLabel").textContent = recovery ? "Код восстановления кабинета" : "Инвайт-код";
+    $("#code").placeholder = recovery ? "XXXX-XXXX-XXXX" : "Код из приглашения";
+    $("#recToggle").textContent = recovery ? "Войти по инвайт-коду" : "Уже пользовались Qala.fix на другом телефоне? Введите код восстановления кабинета"; };
   $("#joinBtn").onclick = e => busy(e.currentTarget, async () => {
     const code = $("#code").value.trim();
     if (!code) throw new Error("Введите код.");
@@ -250,10 +263,10 @@ function openJoin(then){
       const { data, error } = await S.sb.auth.signInAnonymously();
       if (error) throw error; S.session = data.session;
     }
-    const { error } = await S.sb.rpc("join_pilot", {p_code: code});
+    const { error } = await S.sb.rpc(recovery ? "recover_account" : "join_pilot", {p_code: code});
     if (error) throw error;
-    await loadMe(); renderMarkers();
-    toast(isMod() ? "Вы вошли как модератор." : "Готово, вы в пилоте.");
+    await loadMe(); await loadComplaints();
+    toast(recovery ? "Кабинет перенесён на этот телефон." : isMod() ? "Вы вошли как модератор." : "Готово, вы в пилоте.");
     closeSheet(); if (then) then();
   });
 }
@@ -433,7 +446,12 @@ function renderComplaint(c){
 
   let stat3;
   if (c.status === "sent") stat3 = `<div class="stat${dUn >= 15 ? " alert" : ""}"><b>${dUn}</b><span>дней без ответа</span></div>`;
-  else if (c.status === "in_work") stat3 = `<div class="stat"><b>${daysSince(c.answered_at)}</b><span>дней в работе</span></div>`;
+  else if (c.status === "in_work"){
+    const over = c.answer_deadline ? Math.floor((Date.now() - new Date(c.answer_deadline + "T23:59:59").getTime()) / DAY) : -1;
+    stat3 = over >= 0
+      ? `<div class="stat alert"><b>${over + 1}</b><span>дней просрочки обещанного срока</span></div>`
+      : `<div class="stat"><b>${daysSince(c.answered_at)}</b><span>дней в работе</span></div>`;
+  }
   else if (c.status === "verifying") stat3 = `<div class="stat"><b>${c.fixed_count}/${FIX_NEEDED}</b><span>«исправлено»</span></div>`;
   else if (c.status === "fixed") stat3 = `<div class="stat"><b>✓</b><span>проверено жителями</span></div>`;
   else stat3 = `<div class="stat"><b>${daysSince(c.created_at)}</b><span>дней на карте</span></div>`;
@@ -460,6 +478,11 @@ function renderComplaint(c){
       ${stat3}
     </div>
     ${stepsHtml(c)}
+    ${c.answered_at ? answerBlock(c) : ""}
+    ${c.status === "sent" && (isMine(c) || isMod()) ? `<button class="btn light" id="answeredBtn" style="width:100%;margin-top:8px">Акимат ответил: приложить ответ</button>` : ""}
+    ${["sent","in_work"].includes(c.status) && (isMine(c) || isMod()) ? `<button class="btn ghost" id="reportedBtn" style="width:100%;margin-top:8px">Акимат сообщил, что исправлено</button>` : ""}
+    ${(isMine(c) || isMod()) ? `<button class="btn ghost" id="noteBtn" style="width:100%;margin-top:8px">＋ Фото, скрин или комментарий</button>` : ""}
+    ${c.status === "sent" && !isMine(c) && !isMod() ? `<div class="muted small">Когда придёт ответ акимата, автор жалобы отметит его со скриншотом. До этого идёт счётчик дней без ответа.</div>` : ""}
     ${c.contractor || c.warranty_until ? `<div class="box small">${c.contractor ? "Подрядчик: <b>" + esc(c.contractor) + "</b>. " : ""}${c.warranty_until ? "Гарантия до " + fmtDate(c.warranty_until) : ""}</div>` : ""}
     <div class="stack" style="margin-top:12px">${actions.join("")}
       ${(canFix || canNotFix || canBad) ? `<div class="muted small">Голос о ремонте принимается только рядом с точкой (до ${GEO_RADIUS} м): телефон спросит геолокацию.</div>` : ""}
@@ -467,8 +490,10 @@ function renderComplaint(c){
     ${needTicket ? ticketBlock(c) : ""}
     ${c.status === "to_send" && !needTicket ? `<div class="box info small" style="margin-top:12px">Жалоба в очереди: модератор подаст её в eOtinish / iKomek 109 и впишет номер обращения. Можно подать и самому: <a href="#" id="selfFile">как подать</a>.</div>` : ""}
     <div class="row" style="margin-top:14px"><button class="btn ghost sm" id="shareBtn">Поделиться</button><button class="btn ghost sm" data-close>Закрыть</button></div>
+    <div id="history"></div>
     ${isMod() ? modBlock(c) : ""}
   `);
+  loadHistory(c);
 
   document.querySelectorAll("[data-act]").forEach(b => b.onclick = e => {
     if (!member && !ensureMember(() => openComplaint(c.id))) return;
@@ -490,6 +515,9 @@ function renderComplaint(c){
   };
   if ($("#selfFile")) $("#selfFile").onclick = e => { e.preventDefault(); $("#selfFile").closest(".box").outerHTML = ticketBlock(c, true); bindTicket(c); };
   bindTicket(c);
+  if ($("#answeredBtn")) $("#answeredBtn").onclick = () => answeredFlow(c);
+  if ($("#reportedBtn")) $("#reportedBtn").onclick = () => reportedFlow(c);
+  if ($("#noteBtn")) $("#noteBtn").onclick = () => noteFlow(c);
   if (isMod()) bindMod(c);
 }
 // «Сделано плохо / снова сломалось»: только со свежим фото и геометкой ≤150 м
@@ -523,6 +551,143 @@ function badRepairFlow(c){
   };
   draw();
 }
+function answerBlock(c){
+  return `<div class="box info small" style="margin-top:10px"><b>Ответ акимата ${fmtDate(c.answered_at)}</b>
+    ${c.answer_deadline ? `<div>Обещанный срок: <b>${fmtDate(c.answer_deadline)}</b></div>` : ""}
+    ${c.answer_note ? `<div>«${esc(c.answer_note)}»</div>` : ""}
+    ${c.answer_photo_path ? `<a href="${photoUrl(c.answer_photo_path)}" target="_blank" rel="noopener"><img class="photo" style="margin-top:8px;max-height:180px" src="${photoUrl(c.answer_photo_path)}" alt="Скриншот ответа" loading="lazy"></a>` : ""}
+  </div>`;
+}
+
+// Общая шторка «приложить фото/скрин + текст». Используется для ответа акимата, отчёта о ремонте и заметок.
+function attachFlow(c, o){
+  let photo = null, url = null;
+  const st = {deadline:"", note:""};
+  const draw = () => {
+    openSheet(`<h2>${o.title}</h2>
+      <p class="muted small">${o.intro}</p>
+      <div class="stack">
+        <label class="photo-pick">${url ? `<img src="${url}" alt="" style="object-fit:contain;background:#fff">` : `<div style="font-size:30px">${o.icon || "📎"}</div><div><b>${o.photoLabel}</b></div><div class="small">${o.photoRequired ? "обязательно" : "необязательно"}</div>`}
+          <input type="file" id="atPhoto" accept="image/*"></label>
+        ${o.deadline ? `<label class="field"><span>Обещанный срок исправления (если указан)</span><input type="date" id="atDeadline" value="${st.deadline}"></label>` : ""}
+        <label class="field"><span>${o.noteLabel}</span><textarea id="atNote" maxlength="${o.noteMax || 300}" placeholder="${o.notePlaceholder || ""}">${esc(st.note)}</textarea></label>
+        <button class="btn" id="atSend"${o.photoRequired && !photo ? " disabled" : ""}>${o.submit}</button>
+        <button class="btn ghost" id="atBack">Назад</button>
+      </div>`);
+    const keep = () => { st.deadline = $("#atDeadline")?.value || ""; st.note = $("#atNote").value; };
+    $("#atPhoto").onchange = async e => {
+      const f = e.target.files[0]; if (!f) return; keep();
+      try { photo = await compressImage(f); if (url) URL.revokeObjectURL(url); url = URL.createObjectURL(photo); draw(); }
+      catch { toast("Не удалось прочитать изображение."); }
+    };
+    $("#atBack").onclick = () => openComplaint(c.id);
+    $("#atSend").onclick = e => { keep(); busy(e.currentTarget, async () => {
+      if (!photo && !st.note.trim()) throw new Error("empty_update");
+      let path = null;
+      if (photo){
+        path = `${S.session.user.id}/${o.prefix}-${c.id}-${Date.now()}.jpg`;
+        const up = await S.sb.storage.from("photos").upload(path, photo, {contentType:"image/jpeg", upsert:false});
+        if (up.error) throw up.error;
+      }
+      await o.save(path, st);
+      toast(o.done);
+      await refresh(); openComplaint(c.id);
+    }); };
+  };
+  draw();
+}
+const PRIVACY_HINT = "Скриншот увидят все: закройте на нём своё ФИО, ИИН и телефон.";
+function answeredFlow(c){
+  attachFlow(c, {title:"Акимат ответил", icon:"🧾", prefix:"answer", photoRequired:true, deadline:true,
+    intro:`Сам статус не поменяется: у eOtinish и iKomek нет открытого доступа к ответам. Приложите скриншот ответа из eOtinish, SMS или письма. ${PRIVACY_HINT}`,
+    photoLabel:"Скриншот ответа", noteLabel:"Коротко, что ответили (необязательно)", notePlaceholder:"Например: включено в план ремонта на май",
+    submit:"Сохранить ответ", done:"Ответ сохранён. Счётчик дней без ответа остановлен.",
+    save:(path, st) => rpc("mark_answered", {p_id:c.id, p_photo_path:path, p_deadline:st.deadline || null, p_note:st.note || null})});
+}
+function reportedFlow(c){
+  attachFlow(c, {title:"Акимат сообщил, что исправлено", icon:"🧾", prefix:"reported", photoRequired:true,
+    intro:`Приложите скриншот, где акимат пишет, что работы выполнены. Точка уйдёт на проверку: зелёной её сделают только ${FIX_NEEDED} жителя, проверив на месте. ${PRIVACY_HINT}`,
+    photoLabel:"Скриншот отчёта акимата", noteLabel:"Что написали (необязательно)", submit:"Отправить на проверку жителям",
+    done:"Точка на проверке: попросите соседей отметить «Уже исправили».",
+    save:(path, st) => rpc("mark_reported", {p_id:c.id, p_photo_path:path, p_note:st.note || null})});
+}
+function noteFlow(c){
+  attachFlow(c, {title:"Добавить в историю", icon:"📷", prefix:"note", photoRequired:false, noteMax:500,
+    intro:`Новое фото места, скрин переписки с акиматом или комментарий. Всё это появится в истории жалобы. ${PRIVACY_HINT}`,
+    photoLabel:"Фото или скриншот", noteLabel:"Комментарий", notePlaceholder:"Например: позвонил в 109, обещали перезвонить",
+    submit:"Добавить", done:"Добавлено в историю.",
+    save:(path, st) => rpc("add_update", {p_id:c.id, p_note:st.note || null, p_photo_path:path})});
+}
+
+// ---------- История жалобы ----------
+const UPDATE_KIND = {note:"Обновление", answer:"Ответ акимата", reported:"Акимат сообщил об исправлении", ticket:"Подано обращение"};
+async function loadHistory(c){
+  const box = $("#history"); if (!box) return;
+  const { data, error } = await S.sb.from("complaint_updates").select("*").eq("complaint_id", c.id).order("created_at", {ascending:true});
+  if (!box.isConnected) return;
+  if (error){ box.innerHTML = ""; return; }
+  const items = [{kind:"created", created_at:c.created_at}, ...(data || [])];
+  box.innerHTML = `<h3>История</h3>` + items.map(u => `<div class="list-item"><i class="dot" style="background:var(--line)"></i><div class="grow">
+      <div class="muted small">${fmtDate(u.created_at)}${u.author && S.session && u.author === S.session.user.id ? " · вы" : u.author === c.author ? " · автор" : u.author ? " · модератор" : ""}</div>
+      <div class="title">${u.kind === "created" ? "Жалоба добавлена" : UPDATE_KIND[u.kind] || "Обновление"}</div>
+      ${u.note ? `<div class="small">${esc(u.note)}</div>` : ""}
+      ${u.photo_path ? `<a href="${photoUrl(u.photo_path)}" target="_blank" rel="noopener"><img class="photo" style="margin-top:6px;max-height:160px" src="${photoUrl(u.photo_path)}" alt="" loading="lazy"></a>` : ""}
+    </div></div>`).join("");
+}
+
+// ---------- Личный кабинет ----------
+function nextStep(c){
+  switch (c.status){
+    case "collecting": return {act:true, text:`Нужен ещё ${SEND_MIN_CONF - Math.min(c.conf_count, SEND_MIN_CONF)} житель: поделитесь ссылкой с соседями. Или подайте сами и впишите номер.`};
+    case "to_send":    return {act:true, text:"Подайте в eOtinish / iKomek 109 (текст готов) и впишите номер обращения."};
+    case "sent":       return {act:true, text:`${plural(daysUnanswered(c), "день", "дня", "дней")} без ответа. Когда ответят, приложите скриншот ответа.`};
+    case "in_work":    return {act:false, text:c.answer_deadline ? `Обещали до ${fmtDate(c.answer_deadline)}. Когда акимат сообщит об исправлении, приложите скриншот.` : "Ждём ремонта. Когда акимат сообщит об исправлении, приложите скриншот."};
+    case "verifying":  return {act:false, text:`Проверка: ${c.fixed_count}/${FIX_NEEDED} жителей подтвердили ремонт на месте.`};
+    case "fixed":      return {act:false, text:`Исправлено ${fmtDate(c.fixed_at)}.`};
+  }
+  return {act:false, text:""};
+}
+async function openCabinet(){
+  if (!S.sb) return;
+  if (!ensureMember(openCabinet)) return;
+  const { data, error } = await S.sb.from("complaints").select("*").eq("author", S.session.user.id).order("created_at", {ascending:false});
+  if (error) return toast(errText(error));
+  const mine = data || [];
+  const act = mine.filter(c => !c.hidden && nextStep(c).act), rest = mine.filter(c => c.hidden || !nextStep(c).act);
+  const item = c => `<div class="list-item" data-open="${c.id}"><i class="dot ${colorOf(c)}"></i><div class="grow">
+      <div class="title">${esc(catName(c))}</div>
+      <div class="muted small">${esc(c.address || "")}${c.city !== S.city ? " · " + esc(CITIES[c.city]?.name || "") : ""} · ${fmtDate(c.created_at)}</div>
+      <div class="small"><b>${c.hidden ? "Скрыта модератором" + (c.hidden_reason ? ": " + esc(c.hidden_reason) : "") : STATUS[c.status]}</b>${c.ticket_no ? " · № " + esc(c.ticket_no) : ""}</div>
+      ${c.hidden ? "" : `<div class="small muted">${nextStep(c).text}</div>`}
+    </div></div>`;
+  openSheet(`<h2>Мой кабинет</h2>
+    <div class="stats">
+      <div class="stat"><b>${mine.length}</b><span>моих жалоб</span></div>
+      <div class="stat${act.length ? " alert" : ""}"><b>${act.length}</b><span>ждут моего действия</span></div>
+      <div class="stat"><b>${mine.filter(c => c.status === "fixed").length}</b><span>исправлено</span></div>
+    </div>
+    ${act.length ? `<h3>Нужно ваше действие</h3>${act.map(item).join("")}` : ""}
+    <h3>${act.length ? "Остальные" : "Мои жалобы"}</h3>
+    ${rest.map(item).join("") || `<div class="muted small">${mine.length ? "Все жалобы ждут вашего действия." : "Пока нет жалоб. Нажмите «Сообщить о проблеме» на карте."}</div>`}
+    <h3>Чужие точки, которые я подтвердил</h3>
+    <div class="muted small">${[...S.votes].filter(v => v.includes(":confirm:")).length - mine.length > 0 ? plural([...S.votes].filter(v => v.includes(":confirm:")).length - mine.length, "точка", "точки", "точек") + ". Они видны на карте." : "Пока нет."}</div>
+    <h3>Не потерять кабинет</h3>
+    <div class="muted small">Кабинет привязан к этому браузеру: мы не спрашиваем телефон и email. Если смените телефон или очистите браузер, войти обратно можно только по коду восстановления.</div>
+    <div id="recBox" style="margin-top:8px"><button class="btn light" id="recBtn" style="width:100%">Получить код восстановления</button></div>`);
+  document.querySelectorAll("[data-open]").forEach(el => el.onclick = () => openComplaint(Number(el.dataset.open)));
+  $("#recBtn").onclick = e => {
+    if (S.profile?.recovery_hash && !confirm("Код уже выдавался. Новый код отменит старый. Продолжить?")) return;
+    busy(e.currentTarget, async () => {
+      const code = await rpc("new_recovery_code", {});
+      S.profile.recovery_hash = "set";
+      $("#recBox").innerHTML = `<div class="box warn"><div class="small">Ваш код восстановления. Сохраните его в заметках или сделайте скриншот. Мы показываем его один раз и сами не знаем его.</div>
+        <div style="font:700 24px/1.3 ui-monospace,monospace;letter-spacing:.06em;margin:8px 0">${esc(code)}</div>
+        <button class="btn sm light" id="recCopy">Скопировать</button></div>`;
+      $("#recCopy").onclick = async () => { try { await navigator.clipboard.writeText(code); toast("Код скопирован."); } catch {} };
+    });
+  };
+}
+
 function STATUS_SHORT(c){ return ({collecting:"сбор", to_send:"в очереди", sent:"отправлено", in_work:"в работе", verifying:"проверка", fixed:"готово"})[c.status]; }
 
 function ticketBlock(c, readOnly){
@@ -557,11 +722,10 @@ function modBlock(c){
   const catOpts = Object.entries(CATS).filter(([k]) => k !== "other").map(([k,v]) => `<option value="${k}">${esc(v.name)}</option>`).join("");
   return `<div class="box" style="margin-top:16px"><b>Модератор</b>
     <div class="row wrap" style="margin-top:8px">
-      ${["sent","to_send"].includes(c.status) ? `<button class="btn sm" data-mod="answered">Акимат ответил</button>` : ""}
-      ${["sent","in_work"].includes(c.status) ? `<button class="btn sm" data-mod="akimat_reported">Акимат отчитался о ремонте</button>` : ""}
       ${c.hidden ? `<button class="btn sm light" data-mod="unhide">Вернуть на карту</button>` : `<button class="btn sm warn" data-mod="hide">Скрыть</button>`}
       ${c.photo_path ? `<button class="btn sm ghost" data-mod="remove_photo">Убрать фото</button>` : ""}
       <button class="btn sm warn" data-mod="ban_author">Бан автора</button>
+      <button class="btn sm warn" data-mod="delete">Удалить навсегда</button>
     </div>
     ${c.cat === "other" && !c.moderated ? `<div class="row wrap" style="margin-top:8px">
       <select id="mSev" style="padding:6px;border-radius:8px">${[3,2,1].map(s => `<option value="${s}"${c.custom_sev==s?" selected":""}>${SEV[s]}</option>`).join("")}</select>
@@ -579,6 +743,16 @@ function bindMod(c){
     if (a === "set_cat") v = $("#mCat").value;
     if (a === "contractor") v = $("#mContr").value;
     if (a === "warranty"){ v = $("#mWarr").value; if (!v) return toast("Выберите дату."); }
+    if (a === "delete"){
+      if (!confirm("Удалить жалобу навсегда вместе с фото, голосами и историей? Это нельзя отменить.")) return;
+      return busy(e.currentTarget, async () => {
+        const { data: ups } = await S.sb.from("complaint_updates").select("photo_path").eq("complaint_id", c.id);
+        const paths = [c.photo_path, c.bad_photo_path, c.answer_photo_path, ...(ups || []).map(u => u.photo_path)].filter(Boolean);
+        await rpc("mod_action", {p_id:c.id, p_action:"delete", p_value:null});
+        if (paths.length) await S.sb.storage.from("photos").remove([...new Set(paths)]);
+        toast("Жалоба удалена."); closeSheet(); await refresh();
+      });
+    }
     busy(e.currentTarget, async () => { await rpc("mod_action", {p_id:c.id, p_action:a, p_value:v}); toast("Сделано."); await refresh(); openComplaint(c.id); });
   });
 }
@@ -605,7 +779,7 @@ function openMenu(){
   openSheet(`<h2>Qala.fix</h2>
     <p class="muted small">Пилот для жителей ${({astana:"Астаны",almaty:"Алматы"})[S.city]}. Жалоба с фото попадает на общую карту, жители подтверждают её, а мы считаем, сколько дней акимат не отвечает. Зелёной точка становится, только когда 3 жителя на месте подтвердили ремонт.</p>
     ${isMod() ? `<button class="btn" id="modBtn" style="width:100%;margin:6px 0">Модерация</button>` : ""}
-    ${S.profile ? "" : `<button class="btn" id="joinMenu" style="width:100%;margin:6px 0">Войти по инвайт-коду</button>`}
+    ${S.profile ? `<button class="btn light" id="cabMenu" style="width:100%;margin:6px 0">Мой кабинет</button>` : `<button class="btn" id="joinMenu" style="width:100%;margin:6px 0">Войти по инвайт-коду</button>`}
     <h3>Цвета</h3>
     <div class="legend">
       <div><i class="dot red"></i> Опасно для жизни, или много подтверждений и долго без ответа</div>
@@ -625,6 +799,7 @@ function openMenu(){
   document.querySelectorAll("[data-open]").forEach(el => el.onclick = () => openComplaint(Number(el.dataset.open)));
   if ($("#modBtn")) $("#modBtn").onclick = openModeration;
   if ($("#joinMenu")) $("#joinMenu").onclick = () => openJoin();
+  if ($("#cabMenu")) $("#cabMenu").onclick = openCabinet;
   if ($("#delMe")) $("#delMe").onclick = e => {
     if (!confirm("Удалить все ваши жалобы, фото и голоса? Это нельзя отменить.")) return;
     busy(e.currentTarget, async () => {

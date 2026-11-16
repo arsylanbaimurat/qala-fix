@@ -49,21 +49,57 @@ do $$ begin perform vote_repair(1,'bad',51.13,71.43,'00000000-0000-0000-0000-000
 select vote_repair(:id1,'bad',51.13,71.43,'00000000-0000-0000-0000-000000000002/bad.jpg');
 select pg_temp.as_user(4); select vote_repair(:id1,'bad',51.13,71.43,'00000000-0000-0000-0000-000000000004/bad.jpg');
 select status, reopen_count, ticket_no, bad_photo_path from complaints where id=:id1;
+-- author marks answer; other resident cannot
+select pg_temp.as_user(3);
+select create_complaint('astana','light',null,null,'темно',null,51.16,71.46,null) as id4 \gset
+select set_ticket(:id4,'eotinish','E-77');
+select pg_temp.as_user(4);
+do $$ begin perform mark_answered((select max(id) from complaints), '00000000-0000-0000-0000-000000000004/a.jpg'); raise exception 'FAIL non-author'; exception when others then if sqlerrm not like '%forbidden%' then raise; end if; end $$;
+select pg_temp.as_user(3);
+do $$ begin perform mark_answered((select max(id) from complaints), '00000000-0000-0000-0000-000000000004/a.jpg'); raise exception 'FAIL foreign photo'; exception when others then if sqlerrm not like '%answer_photo_required%' then raise; end if; end $$;
+select mark_answered(:id4, '00000000-0000-0000-0000-000000000003/a.jpg');
+select status from complaints where id=:id4;
+select pg_temp.as_user(4);
 -- resident cannot moderate
 do $$ begin perform mod_action(3,'hide','x'); raise exception 'FAIL'; exception when others then if sqlerrm not like '%forbidden%' then raise; end if; end $$;
 -- moderator
 select pg_temp.as_user(9);
 select mod_action(:id3,'approve_custom','3');
 select mod_action(:id2,'hide','спам');
-select set_ticket(:id2,'ikomek','109-555'); select mod_action(:id2,'answered');
+select set_ticket(:id2,'ikomek','109-555');
+do $$ begin perform mark_answered(2, null); raise exception 'FAIL answer w/o photo'; exception when others then if sqlerrm not like '%answer_photo_required%' then raise; end if; end $$;
+select mark_answered(:id2, '00000000-0000-0000-0000-000000000009/ans.jpg', current_date + 30, 'Включено в план ремонта');
+select status, answered_at is not null as answered, answer_deadline - current_date as deadline_in, answer_note from complaints where id=:id2;
 select id, status, hidden, effective_sev(c) from complaints c order by id;
+select create_complaint('astana','trash',null,null,'мусор',null,51.17,71.47,null) as idd \gset
+select mod_action(:idd,'delete');
+select count(*) as deleted_gone from complaints where id = :idd;
 -- resident cannot see hidden or others' votes / invite codes
 select pg_temp.as_user(2);
 select count(*) as visible_to_2 from complaints;
 select count(*) as votes_visible_to_2 from votes;
 do $$ begin perform 1 from invite_codes; raise exception 'FAIL codes visible'; exception when insufficient_privilege then null; end $$;
 -- anon can read map
+-- history: author adds note/photo; others cannot; reported moves to verifying
+select pg_temp.as_user(3);
+select add_update(:id4, 'Фото сегодня, всё так же темно', '00000000-0000-0000-0000-000000000003/n.jpg');
+do $$ begin perform add_update((select max(id) from complaints), '', null); raise exception 'FAIL empty'; exception when others then if sqlerrm not like '%empty_update%' then raise; end if; end $$;
+select mark_reported(:id4, '00000000-0000-0000-0000-000000000003/r.jpg', 'Акимат: работы выполнены');
+select status, akimat_reported from complaints where id=:id4;
+select kind, note from complaint_updates where complaint_id=:id4 order by id;
+select pg_temp.as_user(4);
+do $$ begin perform add_update((select max(id) from complaints), 'чужое', null); raise exception 'FAIL foreign update'; exception when others then if sqlerrm not like '%forbidden%' then raise; end if; end $$;
+-- recovery: user 3 moves to a new device (user 5)
+select pg_temp.as_user(3);
+select new_recovery_code() as rc \gset
+reset role; insert into auth.users values ('00000000-0000-0000-0000-000000000005'); set role authenticated;
+select pg_temp.as_user(5);
+do $$ begin perform recover_account('WRONG-CODE'); raise exception 'FAIL bad recovery'; exception when others then if sqlerrm not like '%bad_recovery%' then raise; end if; end $$;
+select recover_account(lower(:'rc'));
+select count(*) as moved_complaints from complaints where author = auth.uid();
+select count(*) as old_profile_left from profiles where id = '00000000-0000-0000-0000-000000000003';
 reset role; set role anon; select set_config('request.jwt.claim.sub','',false);
+select count(*) as updates_visible_to_anon from complaint_updates;
 select count(*) as visible_to_anon from complaints;
 do $$ begin perform confirm_complaint(1); raise exception 'FAIL anon'; exception when insufficient_privilege then null; end $$;
 reset role;
