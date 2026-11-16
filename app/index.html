@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Qala.fix — проблемы города</title>
+<meta name="description" content="Карта городских проблем Астаны: жалоба с фото, подтверждения жителей, счётчик дней без ответа акимата.">
+<meta name="theme-color" content="#14532d">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Qala.fix">
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">Qala<span>.fix</span> <small>пилот</small></div>
+  <select id="city" aria-label="Город">
+    <option value="astana">Астана</option>
+    <option value="almaty">Алматы</option>
+  </select>
+  <button id="menuBtn" class="icon-btn" aria-label="Меню">☰</button>
+</header>
+
+<div id="filters" class="filters" role="toolbar" aria-label="Фильтр">
+  <button data-f="all" class="chip on">Все</button>
+  <button data-f="red" class="chip"><i class="dot red"></i>Опасно</button>
+  <button data-f="orange" class="chip"><i class="dot orange"></i>Срочно</button>
+  <button data-f="yellow" class="chip"><i class="dot yellow"></i>Неудобство</button>
+  <button data-f="green" class="chip"><i class="dot green"></i>Исправлено</button>
+  <button data-f="mine" class="chip">Мои</button>
+</div>
+
+<main id="map" aria-label="Карта"></main>
+
+<button id="locateBtn" class="fab-small" aria-label="Где я">◎</button>
+<button id="addBtn" class="fab">＋ Сообщить о проблеме</button>
+
+<div id="sheetBackdrop" class="backdrop" hidden></div>
+<section id="sheet" class="sheet" hidden aria-modal="true" role="dialog">
+  <div class="grab"></div>
+  <button class="close icon-btn" data-close aria-label="Закрыть">✕</button>
+  <div id="sheetBody"></div>
+</section>
+
+<div id="pickBar" class="pickbar" hidden>
+  <div>Передвиньте карту так, чтобы <b>пин</b> стоял точно на месте проблемы</div>
+  <div class="row"><button class="btn ghost" id="pickCancel">Назад</button><button class="btn" id="pickOk">Здесь</button></div>
+</div>
+<div id="centerPin" class="center-pin" hidden>📍</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="config.js"></script>
+<script src="vendor/leaflet.js"></script>
+<script src="vendor/supabase.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
