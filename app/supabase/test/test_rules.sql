@@ -71,6 +71,9 @@ do $$ begin perform mark_answered(2, null); raise exception 'FAIL answer w/o pho
 select mark_answered(:id2, '00000000-0000-0000-0000-000000000009/ans.jpg', current_date + 30, 'Включено в план ремонта');
 select status, answered_at is not null as answered, answer_deadline - current_date as deadline_in, answer_note from complaints where id=:id2;
 select id, status, hidden, effective_sev(c) from complaints c order by id;
+select create_complaint('astana','trash',null,null,'мусор',null,51.17,71.47,null) as idd \gset
+select mod_action(:idd,'delete');
+select count(*) as deleted_gone from complaints where id = :idd;
 -- resident cannot see hidden or others' votes / invite codes
 select pg_temp.as_user(2);
 select count(*) as visible_to_2 from complaints;

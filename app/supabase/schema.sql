@@ -407,6 +407,9 @@ begin
     update complaints set contractor = p_value where id = p_id;
   elsif p_action = 'warranty' then
     update complaints set warranty_until = p_value::date where id = p_id;
+  elsif p_action = 'delete' then        -- удалить навсегда (с голосами и историей)
+    delete from complaints where id = p_id;
+    return;
   elsif p_action = 'remove_photo' then
     update complaints set photo_path = null where id = p_id;
   elsif p_action = 'ban_author' then
@@ -485,6 +488,10 @@ create policy photos_insert on storage.objects for insert to authenticated
 drop policy if exists photos_delete_own on storage.objects;
 create policy photos_delete_own on storage.objects for delete to authenticated
   using (bucket_id = 'photos' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists photos_delete_mod on storage.objects;
+create policy photos_delete_mod on storage.objects for delete to authenticated
+  using (bucket_id = 'photos' and public.is_mod());
 
 drop policy if exists photos_read on storage.objects;
 create policy photos_read on storage.objects for select using (bucket_id = 'photos');

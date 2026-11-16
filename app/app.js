@@ -725,6 +725,7 @@ function modBlock(c){
       ${c.hidden ? `<button class="btn sm light" data-mod="unhide">Вернуть на карту</button>` : `<button class="btn sm warn" data-mod="hide">Скрыть</button>`}
       ${c.photo_path ? `<button class="btn sm ghost" data-mod="remove_photo">Убрать фото</button>` : ""}
       <button class="btn sm warn" data-mod="ban_author">Бан автора</button>
+      <button class="btn sm warn" data-mod="delete">Удалить навсегда</button>
     </div>
     ${c.cat === "other" && !c.moderated ? `<div class="row wrap" style="margin-top:8px">
       <select id="mSev" style="padding:6px;border-radius:8px">${[3,2,1].map(s => `<option value="${s}"${c.custom_sev==s?" selected":""}>${SEV[s]}</option>`).join("")}</select>
@@ -742,6 +743,16 @@ function bindMod(c){
     if (a === "set_cat") v = $("#mCat").value;
     if (a === "contractor") v = $("#mContr").value;
     if (a === "warranty"){ v = $("#mWarr").value; if (!v) return toast("Выберите дату."); }
+    if (a === "delete"){
+      if (!confirm("Удалить жалобу навсегда вместе с фото, голосами и историей? Это нельзя отменить.")) return;
+      return busy(e.currentTarget, async () => {
+        const { data: ups } = await S.sb.from("complaint_updates").select("photo_path").eq("complaint_id", c.id);
+        const paths = [c.photo_path, c.bad_photo_path, c.answer_photo_path, ...(ups || []).map(u => u.photo_path)].filter(Boolean);
+        await rpc("mod_action", {p_id:c.id, p_action:"delete", p_value:null});
+        if (paths.length) await S.sb.storage.from("photos").remove([...new Set(paths)]);
+        toast("Жалоба удалена."); closeSheet(); await refresh();
+      });
+    }
     busy(e.currentTarget, async () => { await rpc("mod_action", {p_id:c.id, p_action:a, p_value:v}); toast("Сделано."); await refresh(); openComplaint(c.id); });
   });
 }
